@@ -118,6 +118,10 @@
 
 (defgeneric handle (handler condition))
 
+(defgeneric effect-return (handler value)
+  (:method (handler value)
+    value))
+
 (defun resume (&optional value)
   (invoke-restart 'resume value))
 
@@ -198,47 +202,68 @@
       `(defmethod ,(handle-generic-func-symbol op-name)
                   ((,handler-sym ,handler-class) ,@lambda-list)
          (declare (ignorable ,handler-sym))
-         ,@body))))
+         ,@body)))
 
-(defmacro def-handler (handler-spec &body op-handle-specs)
+  (defun expand-return-spec (handler-class handler-sym return-spec)
+    (when return-spec
+      (destructuring-bind (return-keyword lambda-list &body body) return-spec
+        (declare (ignorable return-keyword)) ;; Just used to show return op
+        `(defmethod effect-return ((,handler-sym ,handler-class) ,@lambda-list)
+           ,@body)))))
+
+(defmacro def-handler (handler-spec &body return-and-op-handle-specs)
   "handler-spec : handler-class OR
                   (handler-class) OR
                   (handler-class handler-bind-sym) OR
-                  (handler-class handler-bind-sym handler-class-slots)"
+                  (handler-class handler-bind-sym handler-class-slots)
+  op-handle-specs : (:return or normal function spec)
+  return spec : (:return (|VAL-SYMBOL|) forms...)
+          Note that the return spec will capture the handler-bind-sym, if given"
   (destructuring-bind (handler-class &optional raw-handler-sym handler-class-slots)
                       (ensure-list handler-spec)
     (let ((handler-sym (or raw-handler-sym
-                           (gensym "handler"))))
+                           (gensym "handler")))
+          (op-handle-specs (remove-if #'(lambda (op-spec)
+                                          (equal (first op-spec) :return))
+                                      return-and-op-handle-specs))
+          (return-spec (find-if #'(lambda (op-spec)
+                                     (equal (first op-spec) :return))
+                                return-and-op-handle-specs)))
       `(progn
          ,(expand-handler-class handler-class handler-class-slots)
          ,@(mapcar #'(lambda (op-handle-spec)
                        (expand-operation-handle handler-class handler-sym op-handle-spec))
-                   op-handle-specs)))))
+                   op-handle-specs)
+         ,(expand-return-spec handler-class handler-sym return-spec)))))
 
 (cl:eval-when (:compile-toplevel :load-toplevel :execute)
-  (defun expand-handler-let-clause (h-class-name-and-sym)
-    `(,(car h-class-name-and-sym) (make-instance ',(cdr h-class-name-and-sym))))
+  (defun expand-handler-let-clause (h-class-name h-class-sym)
+    `(,h-class-sym (make-instance ',h-class-name)))
 
-  (defun expand-handler-effect-clause (h-class-name-and-sym)
+  (defun expand-handler-effect-clause (handler-obj-sym)
     `(effect-condition
        #'(lambda (condition)
-           (handle ,(car h-class-name-and-sym)
+           (handle ,handler-obj-sym
                    condition)))))
 
 ;; TODO: Add a lower-level macro that allows you to use your own handler object
 (defmacro with-handler (handler-class-names &body body)
-  (let ((h-class-name-and-sym-lst (mapcar #'(lambda (name)
-                                              (cons
-                                                (gensym (string name))
-                                                name))
-                                          handler-class-names)))
-    `(let (,@(mapcar #'expand-handler-let-clause h-class-name-and-sym-lst))
-       (handler-bind (,@(mapcar #'expand-handler-effect-clause
-                                h-class-name-and-sym-lst))
-         (restart-case
-             (progn
-               ,@body)
-           (finish (value) value))))))
+  (let ((handler-obj-syms (mapcar #'(lambda (name)
+                                      (gensym (string name)))
+                                  handler-class-names)))
+    `(let (,@(mapcar #'expand-handler-let-clause handler-class-names
+                                                 handler-obj-syms))
+       (reduce #'(lambda (handler value)
+                   (effect-return handler value))
+               (list ,@handler-obj-syms)
+               :from-end t
+               :initial-value
+               (handler-bind (,@(mapcar #'expand-handler-effect-clause
+                                        handler-obj-syms))
+                 (restart-case
+                     (progn
+                       ,@body)
+                   (finish (value) value)))))))
 
 ;;
 ;; Library Example
@@ -298,11 +323,10 @@
               ((lines :initform nil :accessor lines)))
   (emit (msg)
     (push msg (lines handler))
-    (resume))
-  (return-val ()
-    (resume (reverse (lines handler)))))
+    (emit msg))
+  (:return (x)
+    (cons x (reverse (lines handler)))))
 
 (defun with-collecting-emitter ()
-  (with-handler (collecting-emitter)
-    (ehello)
-    (return-val)))
+  (with-handler (collecting-emitter console-emitter)
+    (ehello)))
