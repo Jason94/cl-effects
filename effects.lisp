@@ -1,3 +1,4 @@
+(declaim (optimize (speed 0) (space 0) (debug 3)))
 (in-package :cl-user)
 (ql:quickload "alexandria")
 (defpackage :effects-motivating
@@ -187,43 +188,56 @@
     ,@(mapcan #'expand-operation body)))
 
 (cl:eval-when (:compile-toplevel :load-toplevel :execute)
-  (defun expand-handler-class (handler-sym)
-    `(defclass ,handler-sym ()
-       ()))
+  (defun expand-handler-class (handler-class handler-class-slots)
+    `(defclass ,handler-class ()
+       (,@handler-class-slots)))
 
-  (defun expand-operation-handle (handler-sym op-handle-spec)
+  (defun expand-operation-handle (handler-class handler-sym op-handle-spec)
     (destructuring-bind (op-name lambda-list &body body)
                         op-handle-spec
       `(defmethod ,(handle-generic-func-symbol op-name)
-                  ((handler ,handler-sym) ,@lambda-list)
-         (declare (ignorable handler))
+                  ((,handler-sym ,handler-class) ,@lambda-list)
+         (declare (ignorable ,handler-sym))
          ,@body))))
 
 (defmacro def-handler (handler-spec &body op-handle-specs)
-  "handler-spec : handler-name OR
-                  (handler-name) OR
-                  (handler-name handler-bind-sym) OR
-                  (handler-name handler-bind-sym handler-class-slots)"
-  `(progn
-     ,(expand-handler-class handler-sym)
-     ,@(mapcar #'(lambda (op-handle-spec)
-                   (expand-operation-handle handler-sym op-handle-spec))
-               op-handle-specs)))
+  "handler-spec : handler-class OR
+                  (handler-class) OR
+                  (handler-class handler-bind-sym) OR
+                  (handler-class handler-bind-sym handler-class-slots)"
+  (destructuring-bind (handler-class &optional raw-handler-sym handler-class-slots)
+                      (ensure-list handler-spec)
+    (let ((handler-sym (or raw-handler-sym
+                           (gensym "handler"))))
+      `(progn
+         ,(expand-handler-class handler-class handler-class-slots)
+         ,@(mapcar #'(lambda (op-handle-spec)
+                       (expand-operation-handle handler-class handler-sym op-handle-spec))
+                   op-handle-specs)))))
 
 (cl:eval-when (:compile-toplevel :load-toplevel :execute)
-  (defun expand-handler-effect-clause (handler-sym)
+  (defun expand-handler-let-clause (h-class-name-and-sym)
+    `(,(car h-class-name-and-sym) (make-instance ',(cdr h-class-name-and-sym))))
+
+  (defun expand-handler-effect-clause (h-class-name-and-sym)
     `(effect-condition
        #'(lambda (condition)
-           (handle (make-instance ',handler-sym)
+           (handle ,(car h-class-name-and-sym)
                    condition)))))
 
-(defmacro with-handler (handlers &body body)
-  `(handler-bind (,@(mapcar #'expand-handler-effect-clause
-                          handlers))
-     (restart-case
-         (progn
-           ,@body)
-       (finish (value) value))))
+(defmacro with-handler (handler-class-names &body body)
+  (let ((h-class-name-and-sym-lst (mapcar #'(lambda (name)
+                                              (cons
+                                                (gensym (string name))
+                                                name))
+                                          handler-class-names)))
+    `(let (,@(mapcar #'expand-handler-let-clause h-class-name-and-sym-lst))
+       (handler-bind (,@(mapcar #'expand-handler-effect-clause
+                                h-class-name-and-sym-lst))
+         (restart-case
+             (progn
+               ,@body)
+           (finish (value) value))))))
 
 ;;
 ;; Library Example
@@ -278,13 +292,16 @@
   (with-handler (console-emitter)
     (ehello)))
 
-; (def-handler collecting-emitter
-;   (emit (msg)
-;     (push msg lines))
-;   (return-val ()
-;     (reverse lines)))
-;
-; (defun with-collecting-emitter ()
-;   (with-handler (collecting-emitter)
-;     (ehello)
-;     (return-val)))
+(def-handler (collecting-emitter
+              handler
+              ((lines :initform nil :accessor lines)))
+  (emit (msg)
+    (push msg (lines handler))
+    (resume))
+  (return-val ()
+    (resume (reverse (lines handler)))))
+
+(defun with-collecting-emitter ()
+  (with-handler (collecting-emitter)
+    (ehello)
+    (return-val)))
