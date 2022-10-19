@@ -225,6 +225,7 @@
            (handle ,(car h-class-name-and-sym)
                    condition)))))
 
+;; TODO: Add a lower-level macro that allows you to use your own handler object
 (defmacro with-handler (handler-class-names &body body)
   (let ((h-class-name-and-sym-lst (mapcar #'(lambda (name)
                                               (cons
