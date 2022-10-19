@@ -16,7 +16,7 @@
   (read ()
     (resume (read-line)))
   (print (text)
-    (format t text)
+    (cl:print text)
     (resume)))
 
 (def-handler constant-read
@@ -61,11 +61,37 @@
               handler
               ((lines :initform nil :accessor lines)))
   (emit (msg)
-    (push msg (lines handler))
-    (emit msg))
+    (push msg (lines handler)))
   (:return (x)
     (cons x (reverse (lines handler)))))
 
 (defun with-collecting-emitter ()
   (with-handler (collecting-emitter console-emitter)
     (ehello)))
+
+;;
+;; Iterators
+;;
+
+(def-effect iterate
+  (yield (value)))
+
+(defun iterate (lst)
+  (when lst
+    (yield (first lst))
+    (iterate (rest lst))))
+
+(def-handler stop-at-10
+  (yield (value)
+    (when (>= value 10)
+      (finish))))
+
+(def-handler print-yielded
+  (yield (value)
+    (print value)
+    (resume)))
+
+(defun print-elements-to-10 ()
+  (with-handler (terminal-io)
+    (with-handler (stop-at-10 print-yielded)
+      (iterate (list 7 8 9 10 11 12 13)))))

@@ -136,6 +136,8 @@
                    condition)))))
 
 ;; TODO: Add a lower-level macro that allows you to use your own handler object
+;; TODO: Add easier syntax to inject arguments into handlers. See the Iterators
+;;       example in 2.3 in the Leijen paper for a motivating example.
 (defmacro with-handler (handler-class-names &body body)
   (let ((handler-obj-syms (mapcar #'(lambda (name)
                                       (gensym (string name)))
