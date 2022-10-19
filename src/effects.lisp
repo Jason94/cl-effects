@@ -1,115 +1,4 @@
-(declaim (optimize (speed 0) (space 0) (debug 3)))
-(in-package :cl-user)
-(ql:quickload "alexandria")
-(defpackage :effects-motivating
-  (:use :cl)
-  (:import-from :alexandria
-    #:ensure-list)
-  (:shadow #:print #:read))
-(defpackage :effects-library
-  (:use :cl)
-  (:import-from :alexandria
-    #:ensure-list)
-  (:shadow #:print #:read))
-;; https://www.sciencedirect.com/science/article/pii/S1571066115000705
-;; https://www.microsoft.com/en-us/research/wp-content/uploads/2016/08/algeff-tr-2016-v3.pdf
-;; https://www.youtube.com/watch?v=6OFhD_mHtKA
-
-;;
-;; Motivating Example
-;;
-(in-package :effects-motivating)
-
-(define-condition effect-condition (condition)
-  ((handler-generic-func
-     :initarg :handler-generic-func
-     :reader handler-generic-func)))
-
-(define-condition print-effect (effect-condition)
-  ((text :initarg :text :reader text)))
-(define-condition read-effect (effect-condition)
-  ())
-
-(defgeneric handle (handler condition))
-
-(defmethod handle (handler (condition print-effect))
-  (handle-print handler (text condition)))
-
-(defmethod handle (handler (condition read-effect))
-  (handle-read handler))
-
-(defun resume (&optional value)
-  (invoke-restart 'resume value))
-
-(defun finish (&optional value)
-  (invoke-restart 'finish value))
-
-(defgeneric handle-print (handler text))
-(defgeneric handle-read (handler))
-
-(defun print (text)
-  (restart-case
-      (signal 'print-effect :handler-generic-func #'handle-print
-                            :text text)
-    (resume (value) value)))
-
-(defun read ()
-  (restart-case
-      (signal 'read-effect :handler-generic-func #'handle-read)
-    (resume (value) value)))
-
-(defclass constant-io ()
-  ())
-
-(defmethod handle-print ((handler constant-io) text)
-  (resume))
-
-(defmethod handle-read ((handler constant-io))
-  (resume "Steve"))
-
-(defclass terminal-io ()
-  ())
-
-(defmethod handle-print ((handler terminal-io) text)
-  (format t text)
-  (resume))
-
-(defmethod handle-read ((handler terminal-io))
-  (resume (read-line)))
-
-(defun greet ()
-  (print "Please enter your name:")
-  (let ((name (read)))
-    (print (concatenate 'string "Hello, " name "!~%"))))
-
-(defun greet-constant ()
-  (handler-bind ((effect-condition
-                   #'(lambda (condition)
-                       (handle (make-instance 'constant-io)
-                               condition))))
-    (restart-case
-        (progn
-          (greet)
-          (format t "After greet-constant"))
-      (finish (value) value))))
-
-
-(defun greet-terminal ()
-  (handler-bind ((effect-condition
-                   #'(lambda (condition)
-                       (handle (make-instance 'terminal-io)
-                               condition))))
-    (restart-case
-        (progn
-          (greet)
-          (format t "After greet-terminal"))
-      (finish (value) value))))
-
-
-;;
-;; Library
-;;
-(in-package :effects-library)
+(in-package :effects)
 
 (define-condition effect-condition (condition)
   ((handler-generic-func
@@ -128,7 +17,7 @@
 (defun finish (&optional value)
   (invoke-restart 'finish value))
 
-(cl:eval-when (:compile-toplevel :load-toplevel :execute)
+(eval-when (:compile-toplevel :load-toplevel :execute)
   (defun condition-symbol (op-name)
     (intern (concatenate 'string (string op-name)
                                  "-effect")))
@@ -191,7 +80,7 @@
   `(progn
     ,@(mapcan #'expand-operation body)))
 
-(cl:eval-when (:compile-toplevel :load-toplevel :execute)
+(eval-when (:compile-toplevel :load-toplevel :execute)
   (defun expand-handler-class (handler-class handler-class-slots)
     `(defclass ,handler-class ()
        (,@handler-class-slots)))
@@ -236,7 +125,7 @@
                    op-handle-specs)
          ,(expand-return-spec handler-class handler-sym return-spec)))))
 
-(cl:eval-when (:compile-toplevel :load-toplevel :execute)
+(eval-when (:compile-toplevel :load-toplevel :execute)
   (defun expand-handler-let-clause (h-class-name h-class-sym)
     `(,h-class-sym (make-instance ',h-class-name)))
 
@@ -264,69 +153,3 @@
                      (progn
                        ,@body)
                    (finish (value) value)))))))
-
-;;
-;; Library Example
-;;
-
-(def-effect io
-  (read ())
-  (print (message)))
-
-(def-handler terminal-io
-  (read ()
-    (resume (read-line)))
-  (print (text)
-    (format t text)
-    (resume)))
-
-(def-handler constant-read
-  (read ()
-    (resume "Steve")))
-
-(defun greet ()
-  (print "Please enter your name: ")
-  (let ((name (read)))
-    (print (concatenate 'string "Hello, " name "!~%"))))
-
-(defun greet-with-terminal-io ()
-  (with-handler (terminal-io)
-    (greet)))
-
-(defun greet-with-constant-read ()
-  (with-handler (constant-read terminal-io)
-    (greet)))
-
-;;
-;; Example: https://koka-lang.github.io/koka/doc/book.html#sec-abstracting-handlers
-;;
-(def-effect emit
-  (emit (msg)))
-
-(def-effect return
-  (return-val ()))
-
-(defun ehello ()
-  (emit "hello")
-  (emit "world"))
-
-(def-handler console-emitter
-  (emit (msg)
-    (cl:print msg)))
-
-(defun with-console-emitter ()
-  (with-handler (console-emitter)
-    (ehello)))
-
-(def-handler (collecting-emitter
-              handler
-              ((lines :initform nil :accessor lines)))
-  (emit (msg)
-    (push msg (lines handler))
-    (emit msg))
-  (:return (x)
-    (cons x (reverse (lines handler)))))
-
-(defun with-collecting-emitter ()
-  (with-handler (collecting-emitter console-emitter)
-    (ehello)))
